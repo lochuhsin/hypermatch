@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+#
+# Rust pre-commit hook: formatting + lint (best practices)
+# Enabled via: git config core.hooksPath .githooks
+#
+set -euo pipefail
+
+# Only run if there are staged Rust files.
+staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' || true)
+if [ -z "$staged_rs" ]; then
+    exit 0
+fi
+
+echo "==> rustfmt check"
+if ! cargo fmt --all -- --check; then
+    echo
+    echo "✗ Formatting issues found. Run 'cargo fmt --all' and re-stage your changes."
+    exit 1
+fi
+
+echo "==> clippy (warnings treated as errors)"
+if ! cargo clippy --all-targets --all-features -- -D warnings; then
+    echo
+    echo "✗ Clippy found issues. Fix the warnings above before committing."
+    exit 1
+fi
+
+echo "✓ rustfmt + clippy passed"
