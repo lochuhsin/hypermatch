@@ -148,12 +148,20 @@ mod tests {
         book.add(order(1, Side::Buy, 100, 10));
         book.add(order(2, Side::Buy, 101, 20));
 
-        assert!(book.cancel(OrderId(1)).is_some());
+        assert!(book.cancel(OrderId(2)).is_some());
 
-        assert_eq!(book.best_bid(), Some(Price(101)));
+        assert_eq!(book.best_bid(), Some(Price(100)));
 
-        assert!(!book.locations.contains_key(&OrderId(1)));
+        assert!(!book.locations.contains_key(&OrderId(2)));
 
         assert!(book.cancel(OrderId(999)).is_none());
+    }
+
+    #[test]
+    fn cancel_a_sell() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Sell, 100, 10));
+        assert!(book.cancel(OrderId(1)).is_some());
+        assert_eq!(book.best_ask(), None); // 順便守賣方的 bug 4
     }
 }
