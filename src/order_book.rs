@@ -79,10 +79,9 @@ impl OrderBook {
 
 #[cfg(test)]
 mod tests {
-    use super::*; // 把外層模組(OrderBook 等)引進來
-    use crate::types::Qty; // ⚠️ Qty 在 order_book.rs 還沒 import,測試要造 Order 會用到
+    use super::*;
+    use crate::types::Qty;
 
-    // 小幫手:一行造一張單,省得每次寫一長串
     fn order(id: u64, side: Side, price: i64, qty: u64) -> Order {
         Order {
             id: OrderId(id),
@@ -92,14 +91,12 @@ mod tests {
         }
     }
 
-    #[test] // ← 每個測試函式都要這個標記
+    #[test]
     fn empty_book_has_no_best() {
         let book = OrderBook::new();
-        assert_eq!(book.best_bid(), None); // assert_eq! 失敗會印出兩邊的值
+        assert_eq!(book.best_bid(), None);
         assert_eq!(book.best_ask(), None);
     }
-
-    // 👇 其餘 case 換你寫
 
     #[test]
     fn add_bid_sets_best_bid() {
@@ -162,6 +159,6 @@ mod tests {
         let mut book = OrderBook::new();
         book.add(order(1, Side::Sell, 100, 10));
         assert!(book.cancel(OrderId(1)).is_some());
-        assert_eq!(book.best_ask(), None); // 順便守賣方的 bug 4
+        assert_eq!(book.best_ask(), None);
     }
 }
