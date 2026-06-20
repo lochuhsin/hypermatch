@@ -48,3 +48,23 @@ pub struct Trade {
     pub price: Price,
     pub qty: Qty,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Command {
+    NewOrder(Order),
+    CancelOrder(OrderId),
+
+    #[default]
+    Noop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Event {
+    Accepted(OrderId),
+    Fill(Trade),
+    Rejected(OrderId),
+    Canceled(OrderId),
+
+    #[default]
+    None,
+}

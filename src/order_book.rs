@@ -17,6 +17,7 @@ pub struct OrderBook {
     locations: HashMap<OrderId, (Price, Side)>, // low performance, at least O(n)
 }
 
+// needs to optimize this orderbook
 impl OrderBook {
     pub fn new() -> Self {
         OrderBook {
@@ -95,46 +96,51 @@ impl OrderBook {
         let mut trades = Vec::new();
         let mut taker = incoming;
 
-        if self.best_ask().is_none() {
-            self.add(taker);
-            return trades;
+        while taker.qty > Qty::default() {
+            match self.best_ask() {
+                Some(price) => {
+                    if taker.price < price {
+                        break;
+                    }
+
+                    let level = self
+                        .asks
+                        .get_mut(&price)
+                        .expect("shouldn't happen logic error");
+                    let mut maker = level
+                        .orders
+                        .pop_front()
+                        .expect("shouldn't happen, logic error");
+
+                    trades.push(Trade {
+                        taker: taker.id,
+                        maker: maker.id,
+                        taker_side: taker.side,
+                        price: maker.price,
+                        qty: min(taker.qty, maker.qty),
+                    });
+
+                    let qty = maker.qty;
+
+                    maker.qty = maker.qty.checked_sub(taker.qty).unwrap_or_default();
+                    taker.qty = taker.qty.checked_sub(qty).unwrap_or_default();
+
+                    if maker.qty > Qty::default() {
+                        level.orders.push_front(maker);
+                    } else {
+                        self.locations.remove(&maker.id);
+                    }
+
+                    if level.orders.is_empty() {
+                        self.asks.remove(&price);
+                    }
+                }
+                None => break,
+            }
         }
 
-        while let Some(ask) = self.best_ask() {
-            if taker.price < ask {
-                break;
-            }
-
-            let mut level = self.asks.remove(&ask).unwrap();
-
-            while let Some(mut maker) = level.orders.pop_front() {
-                let mqty = maker.qty;
-                if mqty > taker.qty {
-                    maker.qty = mqty.checked_sub(taker.qty).unwrap_or_default();
-                    level.orders.push_front(maker);
-                } else {
-                    self.locations.remove(&maker.id);
-                }
-
-                trades.push(Trade {
-                    taker: taker.id,
-                    maker: maker.id,
-                    taker_side: taker.side,
-                    price: maker.price,
-                    qty: min(mqty, taker.qty),
-                });
-
-                taker.qty = taker.qty.checked_sub(mqty).unwrap_or_default();
-                if taker.qty == Qty::default() {
-                    break;
-                }
-            }
-
-            if level.orders.is_empty() {
-                self.asks.remove(&ask);
-            } else {
-                self.asks.insert(ask, level);
-            }
+        if taker.qty > Qty::default() {
+            self.add(taker);
         }
 
         trades
