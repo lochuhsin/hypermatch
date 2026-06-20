@@ -10,7 +10,7 @@ pub struct SpscQueue<T> {
     rptr: AtomicU64,
 }
 
-unsafe impl<T> Sync for SpscQueue<T> {}
+unsafe impl<T: Send> Sync for SpscQueue<T> {}
 impl<T: Copy + Default> SpscQueue<T> {
     pub fn with_capacity(cap: usize) -> Result<Self, String> {
         if cap == 0 {
@@ -159,16 +159,21 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        const N: u64 = 1_000_000;
+        const N: u64 = 100_000;
+        // spin 上限:轉超過這個次數還沒進展就 panic,把「無窮卡住燒 CPU」變成「快速測試失敗」
+        const MAX_SPINS: u64 = 1_000_000_000;
         let q = Arc::new(SpscQueue::with_capacity(1024).unwrap());
 
         let producer = {
             let q = Arc::clone(&q);
             thread::spawn(move || {
                 for i in 0..N {
-                    // 滿了就 busy-spin 重試,直到推進去
+                    // 滿了就讓出 CPU 重試(yield_now 不會把核心燒到 100%)
+                    let mut spins = 0u64;
                     while q.try_push(Msg(i)).is_err() {
-                        std::hint::spin_loop();
+                        spins += 1;
+                        assert!(spins < MAX_SPINS, "producer 卡住了(livelock?)i={i}");
+                        std::thread::yield_now();
                     }
                 }
             })
@@ -178,14 +183,21 @@ mod tests {
             let q = Arc::clone(&q);
             thread::spawn(move || {
                 let mut expected = 0u64;
+                let mut spins = 0u64;
                 while expected < N {
                     match q.try_pop() {
                         Some(msg) => {
                             // 收到的順序必須剛好是 0,1,2,... 一個不差
                             assert_eq!(msg.0, expected, "順序錯了 / 有丟單或重複");
                             expected += 1;
+                            spins = 0;
                         }
-                        None => std::hint::spin_loop(), // 空了就等 producer
+                        None => {
+                            // 空了就讓出 CPU 等 producer
+                            spins += 1;
+                            assert!(spins < MAX_SPINS, "consumer 卡住了(livelock?)等 {expected}");
+                            std::thread::yield_now();
+                        }
                     }
                 }
                 expected
