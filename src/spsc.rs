@@ -1,24 +1,17 @@
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
-pub struct Msg(u64);
 // perhapes we need cache line padding
 // lptr, rptr is monotonic increasing counter
-pub struct SpscQueue {
+pub struct SpscQueue<T> {
     cap: usize,
-    ring: Box<[UnsafeCell<Msg>]>,
+    ring: Box<[UnsafeCell<T>]>, // MaybeUninit is better
     lptr: AtomicU64,
     rptr: AtomicU64,
 }
 
-unsafe impl Sync for SpscQueue {}
-/*
-Box::new_uninit_slice(cap), zero overhead initialization
-but I'm not familier about unsafe api.
- */
-impl SpscQueue {
+unsafe impl<T> Sync for SpscQueue<T> {}
+impl<T: Copy + Default> SpscQueue<T> {
     pub fn with_capacity(cap: usize) -> Result<Self, String> {
         if cap == 0 {
             return Err("Capacity must be greater than 0".to_string());
@@ -29,7 +22,7 @@ impl SpscQueue {
         }
         let cap_size = cap.try_into().unwrap();
         let ring = (0..cap_size)
-            .map(|_| UnsafeCell::new(Msg(0)))
+            .map(|_| UnsafeCell::new(T::default()))
             .collect::<Vec<_>>()
             .into_boxed_slice();
 
@@ -41,7 +34,7 @@ impl SpscQueue {
         })
     }
 
-    pub fn try_push(&self, item: Msg) -> Result<(), Msg> {
+    pub fn try_push(&self, item: T) -> Result<(), T> {
         let rptr = self.rptr.load(Ordering::SeqCst);
         let lptr = self.lptr.load(Ordering::SeqCst);
         if rptr - lptr == self.cap as u64 {
@@ -57,7 +50,7 @@ impl SpscQueue {
         Ok(())
     }
 
-    pub fn try_pop(&self) -> Option<Msg> {
+    pub fn try_pop(&self) -> Option<T> {
         let rptr = self.rptr.load(Ordering::SeqCst);
         let lptr = self.lptr.load(Ordering::SeqCst);
         if rptr == lptr {
@@ -88,11 +81,14 @@ impl SpscQueue {
 mod tests {
     use super::*;
 
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct Msg(u64);
+
     #[test]
     fn rejects_zero_and_non_power_of_two() {
-        assert!(SpscQueue::with_capacity(0).is_err());
-        assert!(SpscQueue::with_capacity(3).is_err());
-        assert!(SpscQueue::with_capacity(4).is_ok());
+        assert!(SpscQueue::<usize>::with_capacity(0).is_err());
+        assert!(SpscQueue::<usize>::with_capacity(3).is_err());
+        assert!(SpscQueue::<usize>::with_capacity(4).is_ok());
     }
 
     #[test]
