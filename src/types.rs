@@ -63,9 +63,17 @@ pub enum Command {
 pub enum Event {
     Accepted(OrderId),
     Fill(Trade),
-    Rejected(OrderId),
+    Rejected(OrderId, RejectReason),
     Canceled(OrderId),
 
     #[default]
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectReason {
+    OrderTooLarge,
+    PositionLimit,
+    SelfTrade,
+    OrderNotFound,
 }
