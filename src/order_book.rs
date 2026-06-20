@@ -1,5 +1,8 @@
-use crate::types::{Order, OrderId, Price, Side};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use crate::types::{Order, OrderId, Price, Qty, Side, Trade};
+use std::{
+    cmp::min,
+    collections::{BTreeMap, HashMap, VecDeque},
+};
 
 #[derive(Default)]
 struct Level {
@@ -8,8 +11,8 @@ struct Level {
 
 #[derive(Default)]
 pub struct OrderBook {
-    bids: BTreeMap<Price, Level>,
-    asks: BTreeMap<Price, Level>,
+    bids: BTreeMap<Price, Level>, // buyer
+    asks: BTreeMap<Price, Level>, // seller
 
     locations: HashMap<OrderId, (Price, Side)>, // low performance, at least O(n)
 }
@@ -74,6 +77,121 @@ impl OrderBook {
         };
 
         order
+    }
+
+    // Price belongs to Maker
+    pub fn submit(&mut self, taker: Order) -> Vec<Trade> {
+        /*
+        Try match first then add rest to book.
+         */
+
+        match taker.side {
+            Side::Buy => self.buy_match(taker),
+            Side::Sell => self.sell_match(taker),
+        }
+    }
+
+    pub fn buy_match(&mut self, incoming: Order) -> Vec<Trade> {
+        let mut trades = Vec::new();
+        let mut taker = incoming;
+
+        if self.best_ask().is_none() {
+            self.add(taker);
+            return trades;
+        }
+
+        while let Some(ask) = self.best_ask() {
+            if taker.price < ask {
+                break;
+            }
+
+            let mut level = self.asks.remove(&ask).unwrap();
+
+            while let Some(mut maker) = level.orders.pop_front() {
+                let mqty = maker.qty;
+                if mqty > taker.qty {
+                    maker.qty = mqty.checked_sub(taker.qty).unwrap_or_default();
+                    level.orders.push_front(maker);
+                } else {
+                    self.locations.remove(&maker.id);
+                }
+
+                trades.push(Trade {
+                    taker: taker.id,
+                    maker: maker.id,
+                    taker_side: taker.side,
+                    price: maker.price,
+                    qty: min(mqty, taker.qty),
+                });
+
+                taker.qty = taker.qty.checked_sub(mqty).unwrap_or_default();
+                if taker.qty == Qty::default() {
+                    break;
+                }
+            }
+
+            if level.orders.is_empty() {
+                self.asks.remove(&ask);
+            } else {
+                self.asks.insert(ask, level);
+            }
+        }
+
+        trades
+    }
+
+    pub fn sell_match(&mut self, incoming: Order) -> Vec<Trade> {
+        let mut trades = Vec::new();
+        let mut taker = incoming;
+
+        while taker.qty > Qty(0) {
+            match self.best_bid() {
+                Some(price) => {
+                    if taker.price > price {
+                        break;
+                    }
+
+                    let level = self
+                        .bids
+                        .get_mut(&price)
+                        .expect("logic error, shouldn't happen");
+
+                    let mut maker = level
+                        .orders
+                        .pop_front()
+                        .expect("logic error, shouldn't happen");
+
+                    trades.push(Trade {
+                        taker: taker.id,
+                        maker: maker.id,
+                        taker_side: taker.side,
+                        price,
+                        qty: min(maker.qty, taker.qty),
+                    });
+
+                    let t_qty = taker.qty;
+                    taker.qty = taker.qty.checked_sub(maker.qty).unwrap_or_default();
+                    maker.qty = maker.qty.checked_sub(t_qty).unwrap_or_default();
+
+                    if maker.qty > Qty(0) {
+                        level.orders.push_front(maker);
+                    } else {
+                        self.locations.remove(&maker.id);
+                    };
+
+                    if level.orders.is_empty() {
+                        self.bids.remove(&price);
+                    };
+                }
+                None => break,
+            }
+        }
+
+        if taker.qty > Qty(0) {
+            self.add(taker);
+        }
+
+        trades
     }
 }
 
@@ -160,5 +278,113 @@ mod tests {
         book.add(order(1, Side::Sell, 100, 10));
         assert!(book.cancel(OrderId(1)).is_some());
         assert_eq!(book.best_ask(), None);
+    }
+
+    // ---------- matching: buy side ----------
+    #[test]
+    fn submit_buy_no_cross_rests() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Sell, 101, 10));
+        let trades = book.submit(order(2, Side::Buy, 100, 5));
+        assert!(trades.is_empty());
+        assert_eq!(book.best_bid(), Some(Price(100))); // taker 掛成 bid
+        assert_eq!(book.best_ask(), Some(Price(101))); // ask 沒被動
+    }
+
+    #[test]
+    fn submit_buy_full_fill() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Sell, 100, 10));
+        let trades = book.submit(order(2, Side::Buy, 100, 10));
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].price, Price(100));
+        assert_eq!(trades[0].qty, Qty(10));
+        assert_eq!(book.best_ask(), None);
+        assert_eq!(book.best_bid(), None);
+    }
+
+    #[test]
+    fn submit_buy_maker_bigger_partial() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Sell, 100, 6)); // maker 有 6
+        let trades = book.submit(order(2, Side::Buy, 100, 4)); // taker 要 4
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].qty, Qty(4)); // fill = 4
+        assert_eq!(trades[0].price, Price(100));
+        assert_eq!(book.best_ask(), Some(Price(100))); // maker 剩 2,還在
+        assert_eq!(book.best_bid(), None); // taker 填滿
+    }
+
+    #[test]
+    fn submit_buy_taker_bigger_partial() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Sell, 100, 10));
+        let trades = book.submit(order(2, Side::Buy, 100, 15));
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].qty, Qty(10));
+        assert_eq!(book.best_ask(), None); // maker 被吃光
+        assert_eq!(book.best_bid(), Some(Price(100))); // 殘量 5 掛成 bid
+    }
+
+    #[test]
+    fn submit_buy_sweeps_levels() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Sell, 100, 5));
+        book.add(order(2, Side::Sell, 101, 5));
+        let trades = book.submit(order(3, Side::Buy, 101, 10));
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].price, Price(100)); // 先吃便宜的
+        assert_eq!(trades[1].price, Price(101));
+        assert_eq!(book.best_ask(), None);
+    }
+
+    #[test]
+    fn submit_buy_time_priority() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Sell, 100, 5)); // 較舊
+        book.add(order(2, Side::Sell, 100, 5)); // 較新,同價
+        let trades = book.submit(order(3, Side::Buy, 100, 5));
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].maker, OrderId(1)); // 先吃最舊
+        assert_eq!(book.best_ask(), Some(Price(100))); // id2 還在
+    }
+
+    #[test]
+    fn submit_buy_exec_at_maker_price() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Sell, 100, 10));
+        let trades = book.submit(order(2, Side::Buy, 105, 10)); // 願付到 105
+        assert_eq!(trades[0].price, Price(100)); // 成交在 maker 的 100
+    }
+
+    // ---------- matching: sell side ----------
+    #[test]
+    fn submit_sell_full_fill() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Buy, 100, 10));
+        let trades = book.submit(order(2, Side::Sell, 100, 10));
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].price, Price(100));
+        assert_eq!(trades[0].qty, Qty(10));
+        assert_eq!(book.best_bid(), None);
+    }
+
+    #[test]
+    fn submit_sell_time_priority_after_partial() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Buy, 100, 10)); // 較舊
+        book.add(order(2, Side::Buy, 100, 10)); // 較新
+        book.submit(order(3, Side::Sell, 100, 4)); // 部分吃 id1,id1 剩 6 應留隊首
+        let trades = book.submit(order(4, Side::Sell, 100, 6)); // 應繼續吃 id1
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].maker, OrderId(1));
+    }
+
+    #[test]
+    fn submit_locations_cleaned_after_fill() {
+        let mut book = OrderBook::new();
+        book.add(order(1, Side::Sell, 100, 10));
+        book.submit(order(2, Side::Buy, 100, 10)); // 完全吃掉 maker 1
+        assert!(!book.locations.contains_key(&OrderId(1)));
     }
 }
