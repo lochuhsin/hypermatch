@@ -1,5 +1,8 @@
 use crate::order_book::OrderBook;
+use crate::spsc::SpscQueue;
 use crate::types::{Command, Event};
+use std::sync::Arc;
+use std::thread;
 
 #[derive(Default)]
 pub struct Engine {
@@ -18,17 +21,50 @@ impl Engine {
             Command::Noop => {}
             Command::CancelOrder(id) => {
                 let outcome = self.order_book.cancel(id);
-                match outcome {
-                    Some(o) => out.push(Event::Canceled(o.id)),
-                    None => out.push(Event::Rejected(id)),
-                }
+                let event = match outcome {
+                    Some(o) => Event::Canceled(o.id),
+                    None => Event::Rejected(id),
+                };
+                out.push(event);
             }
             Command::NewOrder(order) => {
-                out.push(Event::Accepted(order.id));
                 let trades = self.order_book.submit(order);
+
+                if trades.len() + 1 > out.capacity() {
+                    out.reserve((trades.len() + 1 - out.capacity()) << 1);
+                }
+                out.push(Event::Accepted(order.id));
                 for trade in trades.iter() {
                     out.push(Event::Fill(*trade));
                 }
+            }
+            Command::ShutDown => {}
+        }
+    }
+
+    pub fn run(&mut self, cmd_q: Arc<SpscQueue<Command>>, evt_q: Arc<SpscQueue<Event>>) {
+        let mut out_buffer = Vec::<Event>::with_capacity(2048);
+
+        loop {
+            if let Some(cmd) = cmd_q.try_pop() {
+                if cmd == Command::ShutDown {
+                    break;
+                }
+
+                self.apply(cmd, &mut out_buffer);
+
+                for evt in out_buffer.iter() {
+                    loop {
+                        if evt_q.try_push(*evt).is_ok() {
+                            break;
+                        }
+                        thread::yield_now();
+                    }
+                }
+                out_buffer.clear();
+            } else {
+                thread::yield_now();
+                continue;
             }
         }
     }

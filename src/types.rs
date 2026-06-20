@@ -53,6 +53,7 @@ pub struct Trade {
 pub enum Command {
     NewOrder(Order),
     CancelOrder(OrderId),
+    ShutDown,
 
     #[default]
     Noop,
