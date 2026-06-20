@@ -1,6 +1,7 @@
 use crate::order_book::OrderBook;
 use crate::types::{Command, Event};
 
+#[derive(Default)]
 pub struct Engine {
     order_book: OrderBook,
 }
