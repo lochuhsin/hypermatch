@@ -9,6 +9,13 @@ impl Qty {
         self.0.checked_sub(rhs.0).map(Qty)
     }
 }
+// memorize this
+impl TryFrom<i64> for Qty {
+    type Error = ();
+    fn try_from(v: i64) -> Result<Self, Self::Error> {
+        u64::try_from(v).map(Qty).map_err(|_| ())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OrderId(pub u64);
